@@ -1,54 +1,66 @@
+{-# LANGUAGE MonadComprehensions #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Use evalState" #-}
+{-# HLINT ignore "Use const" #-}
+
 data Tree a = Leaf a | Node (Tree a) (Tree a)
 
-relabel :: Tree a -> Int -> (Tree (Int, a), Int)
-relabel (Leaf x)   = \i -> (Leaf (i, x), i+1)
-relabel (Node l r) = \i -> let (l', i1) = relabel l i
-                               (r', i2) = relabel r i1
-                           in  (Node l' r', i2)
+tree = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3)
+ftree = Node (Leaf (+1)) (Leaf (*2))
 
-type WithCounter a = Int -> (a, Int)
+toList :: Tree a -> [a]
+toList (Leaf x) = [x]
+toList (Node l r) = toList l <> toList r
 
-next :: WithCounter a -> (a -> WithCounter b) -> WithCounter b
-f `next` g = \i -> let (r, i') = f i in g r i'
+instance (Show a) => Show (Tree a) where
+  show = show.toList
 
-pureWC :: a -> WithCounter a
-pureWC x = \i -> (x, i)
+instance Functor Tree where
+  fmap f (Leaf x)   = Leaf (f x)
+  fmap f (Node l r) = Node (fmap f l) (fmap f r)
 
+instance Applicative Tree where
+  pure = Leaf
+  (<*>) :: Tree (a -> b) -> Tree a -> Tree b
+  Leaf f   <*> Leaf x   = Leaf (f x)
+  Leaf f   <*> Node l r = Node (fmap f l) (fmap f r)
+  Node l r <*> x        = Node (l <*> x)  (r <*> x)
 
-relabelWC :: Tree a -> WithCounter (Tree (a, Int))
-relabelWC (Leaf x) = \i -> (Leaf (x, i), i + 1)
-relabelWC (Node l r) =  relabelWC l `next` \l' ->
-                      relabelWC r `next` \r' ->
-                      pureWC (Node l' r')
+instance Monad Tree where
+  return = pure
+  (>>=) :: Tree a -> (a -> Tree b) -> Tree b
+  Leaf x   >>= f = f x
+  Node l r >>= f = Node (l >>= f) (r >>= f)
 
-type State s a = s -> (a, s)
+newtype State s a = State {runState :: s -> (a, s)}
 
-pureST :: a -> State s a
-pureST x = \i -> (x, i)
+instance Functor (State s) where
+  fmap :: (a -> b) -> State s a -> State s b
+  fmap f (State x) = State (\s -> let (a, s') = x s
+                                  in  (f a, s'))
 
-nextST :: State s a -> (a -> State s b) -> State s b
-f `nextST` g = \i -> let (r, i') = f i in g r i'
+instance Applicative (State s) where
+  pure :: a -> State s a
+  pure a = State (a,)
+  (<*>) :: State s (a -> b) -> State s a -> State s b
+  State f <*> State x = State (\s -> let (f', s')  = f s
+                                         (a , s'') =  x s'
+                                     in  (f' a, s''))
 
+instance Monad (State s) where
+  return = pure
+  (>>=) :: State s a -> (a -> State s b) -> State s b
+  State x >>= f = State (\s -> let (a, s') = x s
+                                   State y = f a
+                               in y s')
 
-relabelST :: Tree a -> State Int (Tree (a, Int))
-relabelST (Leaf x) = \i -> (Leaf (x, i), i + 1)
-relabelST (Node l r) = relabelST l `next` \l' ->
-                       relabelST r `next` \r' ->
-                       pureST (Node l' r')
+relabel :: Tree a -> State Int (Tree (a, Int))
+relabel (Leaf x) = State $ \i -> (Leaf (x, i), i + 1)
+relabel (Node l r) = relabel l >>= \l' ->
+                     relabel r >>= \r' ->
+                     return (Node l' r')
 
-plus :: [a] -> [a] -> [a]
-plus xs ys = foldr (:) ys xs
-
-mapList :: (a -> b) -> [a] -> [b]
-mapList f = foldr ((:).f) []
-
-singletonList :: a -> [a]
-singletonList x = [x]
-
-flattenList :: [[a]] -> [a]
-flattenList [] = []
-flattenList ([]:xxs) = flattenList xxs
-flattenList ((x:xs):xxs) = x:flattenList (xs:xxs)
+rtree = fst $ runState (relabel tree) 0
 
 type Name = String
 data Person = Person { name :: Name, age :: Int }
@@ -59,68 +71,37 @@ validateName = undefined
 validateAge :: Int -> Maybe Int
 validateAge = undefined
 
-validatePerson :: Person -> Maybe Person
-validatePerson p = case (validateName (name p), validateAge (age p)) of
-                  (Nothing, _) -> Nothing
-                  (_, Nothing) -> Nothing
-                  _            -> Just p
+validatePerson :: Name -> Int -> Maybe Person
+validatePerson name age = validateName name >>= \name' ->
+                          validateAge  age  >>= \age'  ->
+                          return (Person name' age')
 
-thenMaybe :: Maybe a -> (a -> Maybe b) -> Maybe b
-thenMaybe Nothing _ = Nothing
-thenMaybe (Just x) f = f x
+-- do notation
 
-validatePerson' :: Person -> Maybe Person
-validatePerson' p = validateName (name p) `thenMaybe` \name' ->
-                    validateAge  (age p) `thenMaybe`  \age'  ->
-                    Just (Person name' age')
+relabel' :: Tree a -> State Int (Tree (a, Int))
+relabel' (Leaf x) = State $ \i -> (Leaf (x, i), i + 1)
+relabel' (Node l r) = do l' <- relabel' l
+                         r' <- relabel' r
+                         return (Node l' r')
 
-mapMaybe :: (a -> b) -> Maybe a -> Maybe b
-mapMaybe _ Nothing = Nothing
-mapMaybe f (Just x) = Just (f x)
+validatePerson' :: Name -> Int -> Maybe Person
+validatePerson' name age = do name' <- validateName name
+                              age'  <- validateAge  age
+                              return (Person name' age')
+put :: s -> State s ()
+put s = State $ \_ -> ((), s)
 
-singletonMaybe :: a -> Maybe a
-singletonMaybe = Just
+get :: State s s
+get = State $ \s -> (s, s)
 
-flattenMap :: Maybe (Maybe a) -> Maybe a
-flattenMap (Just (Just x)) = Just x
-flattenMap _               = Nothing
+incCounter :: State Int ()
+incCounter = do n <- get
+                put (n + 1)
 
-flattenMap' :: Maybe (Maybe a) -> Maybe a
-flattenMap' mma = mma `thenMaybe`     \ma ->
-                  ma  `thenMaybe`     \a  ->
-                       singletonMaybe  a
+-- Usando MonadComprehensions
 
-flattenMap'' :: Maybe (Maybe a) -> Maybe a
-flattenMap'' mma = thenMaybe mma id
-
-thenMaybe' :: Maybe a -> (a -> Maybe b) -> Maybe b
-thenMaybe' ma f = flattenMap (mapMaybe f ma)
-
--- s -> (s -> (a, s), s)
-flattenState :: State s (State s a) -> State s a
-flattenState f s = let (g, s')  = f s
-                   in g s' 
-
-flattenState' :: State s (State s a) -> State s a
-flattenState' f = nextST f id
-
-concatMap' :: (a -> [b]) -> [a] -> [b]
-concatMap' f xs = flattenList (map f xs)
-
-data Option a = Null | Some a
-
-instance Functor Option where
-  fmap _ Null = Null
-  fmap f (Some x) = Some $ f x
-
-instance Applicative Option where
-  pure = Some
-  Null   <*> _      = Null
-  _      <*> Null   = Null
-  Some f <*> Some a = Some (f a) 
-
-instance Monad Option where
-  return = pure
-  Null   >>= _   = Null
-  Some a >>= f   = f a
-
+relabel'' :: Tree a -> State Int (Tree (a, Int))
+relabel'' (Leaf x) = State $ \i -> (Leaf (x, i), i + 1)
+relabel'' (Node l r) = [ Node l' r'
+                          | l' <- relabel'' l
+                          , r' <- relabel'' r ]
