@@ -1,66 +1,54 @@
 {-# LANGUAGE MonadComprehensions #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Eta reduce" #-}
+{-# HLINT ignore "Redundant lambda" #-}
 {-# HLINT ignore "Use evalState" #-}
 {-# HLINT ignore "Use const" #-}
 
-data Tree a = Leaf a | Node (Tree a) (Tree a)
+module Chapter3 where 
 
-tree = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3)
-ftree = Node (Leaf (+1)) (Leaf (*2))
+import Data.Char (toUpper)
 
-toList :: Tree a -> [a]
-toList (Leaf x) = [x]
-toList (Node l r) = toList l <> toList r
+plus :: Maybe Int -> Maybe Int -> Maybe Int
+plus x y = x >>= \x' -> y >>= \y' -> return (x' + y')
 
-instance (Show a) => Show (Tree a) where
-  show = show.toList
+lift2 :: Monad m => (a -> b -> c) -> m a -> m b -> m c
+lift2 f = \ma mb -> ma >>= \a -> mb >>= \b -> return (f a b)
 
-instance Functor Tree where
-  fmap f (Leaf x)   = Leaf (f x)
-  fmap f (Node l r) = Node (fmap f l) (fmap f r)
+maybeEight = lift2 (+)  (Just 3) (Just 5)
 
-instance Applicative Tree where
-  pure = Leaf
-  (<*>) :: Tree (a -> b) -> Tree a -> Tree b
-  Leaf f   <*> Leaf x   = Leaf (f x)
-  Leaf f   <*> Node l r = Node (fmap f l) (fmap f r)
-  Node l r <*> x        = Node (l <*> x)  (r <*> x)
+ap :: Monad m => m (b -> c) -> m b -> m c
+ap mf mb = mb >>= \b -> mf >>= \f -> return (f b)
 
-instance Monad Tree where
-  return = pure
-  (>>=) :: Tree a -> (a -> Tree b) -> Tree b
-  Leaf x   >>= f = f x
-  Node l r >>= f = Node (l >>= f) (r >>= f)
+lift2' :: Monad m => (a -> b -> c) -> m a -> m b -> m c
+lift2' f ma mb = fmap f ma `ap` mb
 
-newtype State s a = State {runState :: s -> (a, s)}
+lift2'' :: Monad m => (a -> b -> c) -> m a -> m b -> m c
+lift2'' f = ap.fmap f
 
-instance Functor (State s) where
-  fmap :: (a -> b) -> State s a -> State s b
-  fmap f (State x) = State (\s -> let (a, s') = x s
-                                  in  (f a, s'))
+fmap' :: (Monad f) =>  (a -> b) -> f a  -> f b
+fmap' f = ap (pure f)
 
-instance Applicative (State s) where
-  pure :: a -> State s a
-  pure a = State (a,)
-  (<*>) :: State s (a -> b) -> State s a -> State s b
-  State f <*> State x = State (\s -> let (f', s')  = f s
-                                         (a , s'') =  x s'
-                                     in  (f' a, s''))
+newtype ZipList a = ZipList { getZipList :: [a]}
 
-instance Monad (State s) where
-  return = pure
-  (>>=) :: State s a -> (a -> State s b) -> State s b
-  State x >>= f = State (\s -> let (a, s') = x s
-                                   State y = f a
-                               in y s')
+instance (Show a) => Show (ZipList a) where
+  show (ZipList xs) = show xs
 
-relabel :: Tree a -> State Int (Tree (a, Int))
-relabel (Leaf x) = State $ \i -> (Leaf (x, i), i + 1)
-relabel (Node l r) = relabel l >>= \l' ->
-                     relabel r >>= \r' ->
-                     return (Node l' r')
+instance Functor ZipList where
+  fmap f (ZipList xs) = ZipList (fmap f xs)
 
-rtree = fst $ runState (relabel tree) 0
+instance Applicative ZipList where
+  pure x = ZipList [x]
+  ZipList fs <*> ZipList xs = ZipList (zipWith id fs xs)
+
+(<$) :: Functor f => a -> f b -> f a
+(<$) = fmap . const
+
+(<*) :: Applicative f => f a -> f b -> f a
+(<*) fa fb = const <$> fa <*> fb
+
+(*>) :: Applicative f => f a -> f b -> f b
+(*>) fa fb = (\ _ x -> x) <$> fa <*> fb
 
 type Name = String
 data Person = Person { name :: Name, age :: Int }
@@ -76,32 +64,29 @@ validatePerson name age = validateName name >>= \name' ->
                           validateAge  age  >>= \age'  ->
                           return (Person name' age')
 
--- do notation
+upperName :: Name -> Int -> Maybe [Char]
+upperName name age = map toUpper <$> validateName name Prelude.<* validateAge age
 
-relabel' :: Tree a -> State Int (Tree (a, Int))
-relabel' (Leaf x) = State $ \i -> (Leaf (x, i), i + 1)
-relabel' (Node l r) = do l' <- relabel' l
-                         r' <- relabel' r
-                         return (Node l' r')
+upperName' name age = map toUpper Prelude.<$ validateAge age <*> validateName name
 
-validatePerson' :: Name -> Int -> Maybe Person
-validatePerson' name age = do name' <- validateName name
-                              age'  <- validateAge  age
-                              return (Person name' age')
-put :: s -> State s ()
-put s = State $ \_ -> ((), s)
+person1 :: Name -> Maybe Person
+person1 name = Person <$> validateName name <*> pure 20
 
-get :: State s s
-get = State $ \s -> (s, s)
+toNestedTriple :: (a, b, c) -> (a, (b, c))
+toNestedTriple (a, b, c) = (a, (b, c))
 
-incCounter :: State Int ()
-incCounter = do n <- get
-                put (n + 1)
+toNestedQuadruple :: (a, b, c, d) -> (a, (b, (c, d)))
+toNestedQuadruple (a, b, c, d) = (a, toNestedTriple (b, c, d))
 
--- Usando MonadComprehensions
+class Applicative f => Monoidal f where
+  unit :: f ()
+  unit = pure ()
 
-relabel'' :: Tree a -> State Int (Tree (a, Int))
-relabel'' (Leaf x) = State $ \i -> (Leaf (x, i), i + 1)
-relabel'' (Node l r) = [ Node l' r'
-                          | l' <- relabel'' l
-                          , r' <- relabel'' r ]
+  (**) :: f a -> f b -> f (a, b)
+  (**) fa fb = (,) <$> fa <*> fb
+
+pure' :: (Monoidal f) => a -> f a
+pure' a = fmap (\_ -> a) unit
+
+ap' :: (Monoidal f) => f (a -> b) -> f a -> f b
+ap' ff fa = fmap (\(g, a) -> g a) (ff Chapter3.** fa)
