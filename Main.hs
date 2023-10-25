@@ -1,117 +1,126 @@
---module Main where
+data Tree a = Leaf a | Node (Tree a) (Tree a)
 
-fizzBuffFor number
-  | number `rem` 15 == 0 = "FizzBuzz"
-  | number `rem` 3 == 0 = "Fizz"
-  | number `rem` 5 == 0 = "Buzz"
-  | otherwise = show number
+relabel :: Tree a -> Int -> (Tree (Int, a), Int)
+relabel (Leaf x)   = \i -> (Leaf (i, x), i+1)
+relabel (Node l r) = \i -> let (l', i1) = relabel l i
+                               (r', i2) = relabel r i1
+                           in  (Node l' r', i2)
 
-fizzBuff number =
-  if number == 0
-  then ""
-  else
-    let
-      head = fizzBuff (number - 1)
-      middle = if head == "" then "" else " "
-      tail = fizzBuffFor number
+type WithCounter a = Int -> (a, Int)
 
-    in
-      head ++ middle ++ tail
+next :: WithCounter a -> (a -> WithCounter b) -> WithCounter b
+f `next` g = \i -> let (r, i') = f i in g r i'
+
+pureWC :: a -> WithCounter a
+pureWC x = \i -> (x, i)
 
 
-curry' :: ((a, b) -> c) -> a -> b -> c
-curry' f a b = f (a, b)
+relabelWC :: Tree a -> WithCounter (Tree (a, Int))
+relabelWC (Leaf x) = \i -> (Leaf (x, i), i + 1)
+relabelWC (Node l r) =  relabelWC l `next` \l' ->
+                      relabelWC r `next` \r' ->
+                      pureWC (Node l' r')
 
-uncurry' :: (a -> b -> c) -> ((a, b) -> c)
-uncurry' f (a, b) = f a b
+type State s a = s -> (a, s)
 
-sieve :: [Int]
-sieve =
-  let
-    sieve' :: [Int] -> [Int]
-    sieve' list =
-      let
-        prime = head list
-        list' = filter (\number -> number `rem` prime /= 0) list
-      in
-        prime : sieve' list'
-  in
-    sieve' [2..]
+pureST :: a -> State s a
+pureST x = \i -> (x, i)
+
+nextST :: State s a -> (a -> State s b) -> State s b
+f `nextST` g = \i -> let (r, i') = f i in g r i'
 
 
--- isBalanced xs =
---   let
---     isBalanced' ('(':xs) opened = isBalanced' xs (opened + 1)
---     isBalanced' (')':xs) opened = ((opened > 0) && isBalanced' xs (opened - 1))
---     isBalanced' (x:xs) opened = isBalanced' xs opened
---     isBalanced' [] opened = opened == 0
---   in
---     isBalanced' xs 0
+relabelST :: Tree a -> State Int (Tree (a, Int))
+relabelST (Leaf x) = \i -> (Leaf (x, i), i + 1)
+relabelST (Node l r) = relabelST l `next` \l' ->
+                       relabelST r `next` \r' ->
+                       pureST (Node l' r')
 
-isBalanced s =
-  isBalanced' 0 s
-  where
-    isBalanced' count s
-      | null s = count == 0
-      | head s == '(' = isBalanced' (count + 1) (tail s)
-      | head s == ')' = count > 0 && isBalanced' (count - 1) (tail s)
-      | otherwise = isBalanced' count (tail s)
+plus :: [a] -> [a] -> [a]
+plus xs ys = foldr (:) ys xs
 
-foldl' f acc xs =
-  if   null xs
-  then acc
-  else
-    let
-      x    = head xs
-      xs'  = tail xs
-      acc' = f acc x
-    in
-      foldl' f acc' xs'
+mapList :: (a -> b) -> [a] -> [b]
+mapList f = foldr ((:).f) []
 
-foldr' f acc xs =
-  if   null xs
-  then acc
-  else
-    let
-      x    = head xs
-      xs'  = tail xs
-      acc' = foldr' f acc xs'
-    in
-      f x acc'
+singletonList :: a -> [a]
+singletonList x = [x]
 
-map' :: (a -> b) -> [a] -> [b]
-map' f = foldr' ((:) . f)  []
+flattenList :: [[a]] -> [a]
+flattenList [] = []
+flattenList ([]:xxs) = flattenList xxs
+flattenList ((x:xs):xxs) = x:flattenList (xs:xxs)
 
-filter' f = foldr' (\x acc -> if f x then x:acc else acc) []
+type Name = String
+data Person = Person { name :: Name, age :: Int }
 
+validateName :: Name -> Maybe Name
+validateName = undefined
 
-findFirst :: (a -> Bool) -> [a] -> Maybe a
-findFirst predicate =
-  foldr (\x acc ->  if predicate x then Just x else acc) Nothing
+validateAge :: Int -> Maybe Int
+validateAge = undefined
 
-fib :: [Int]
-fib = fib' 0 1
-  where
-    fib' :: Int -> Int -> [Int]
-    fib' a b = a : fib' b (a + b)
+validatePerson :: Person -> Maybe Person
+validatePerson p = case (validateName (name p), validateAge (age p)) of
+                  (Nothing, _) -> Nothing
+                  (_, Nothing) -> Nothing
+                  _            -> Just p
 
-reverse' :: [a] -> [a]
-reverse' = foldr (\x acc -> acc <> [x]) []
+thenMaybe :: Maybe a -> (a -> Maybe b) -> Maybe b
+thenMaybe Nothing _ = Nothing
+thenMaybe (Just x) f = f x
 
-reverse'' :: [a] -> [a]
-reverse'' = foldl (flip (:)) []
+validatePerson' :: Person -> Maybe Person
+validatePerson' p = validateName (name p) `thenMaybe` \name' ->
+                    validateAge  (age p) `thenMaybe`  \age'  ->
+                    Just (Person name' age')
 
-zipWith' :: (a -> b -> c) -> [a] -> [b] -> [c]
-zipWith' _ [] _ = []
-zipWith' _ _ [] = []
-zipWith' f (x:xs) (y:ys)  = f x y : zipWith' f xs ys
+mapMaybe :: (a -> b) -> Maybe a -> Maybe b
+mapMaybe _ Nothing = Nothing
+mapMaybe f (Just x) = Just (f x)
 
-zipWith'' :: (a -> b -> c) -> [a] -> [b] -> [c]
-zipWith'' f xs ys = [f x y | x <- xs, y <- ys]
+singletonMaybe :: a -> Maybe a
+singletonMaybe = Just
 
-zipWith''' :: (a -> b -> c) -> [a] -> [b] -> [c]
-zipWith''' f xs ys = foldr (\(x, y) acc -> f x y :acc ) [] (zip xs ys)
+flattenMap :: Maybe (Maybe a) -> Maybe a
+flattenMap (Just (Just x)) = Just x
+flattenMap _               = Nothing
 
-concatMap' :: (a -> b) -> [[a]] -> [b] 
-concatMap' f = foldr (\xxs acc -> map f xxs <> acc ) []
+flattenMap' :: Maybe (Maybe a) -> Maybe a
+flattenMap' mma = mma `thenMaybe`     \ma ->
+                  ma  `thenMaybe`     \a  ->
+                       singletonMaybe  a
+
+flattenMap'' :: Maybe (Maybe a) -> Maybe a
+flattenMap'' mma = thenMaybe mma id
+
+thenMaybe' :: Maybe a -> (a -> Maybe b) -> Maybe b
+thenMaybe' ma f = flattenMap (mapMaybe f ma)
+
+-- s -> (s -> (a, s), s)
+flattenState :: State s (State s a) -> State s a
+flattenState f s = let (g, s')  = f s
+                   in g s' 
+
+flattenState' :: State s (State s a) -> State s a
+flattenState' f = nextST f id
+
+concatMap' :: (a -> [b]) -> [a] -> [b]
+concatMap' f xs = flattenList (map f xs)
+
+data Option a = Null | Some a
+
+instance Functor Option where
+  fmap _ Null = Null
+  fmap f (Some x) = Some $ f x
+
+instance Applicative Option where
+  pure = Some
+  Null   <*> _      = Null
+  _      <*> Null   = Null
+  Some f <*> Some a = Some (f a) 
+
+instance Monad Option where
+  return = pure
+  Null   >>= _   = Null
+  Some a >>= f   = f a
 
