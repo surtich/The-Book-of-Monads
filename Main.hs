@@ -1,169 +1,105 @@
-import Control.Monad.RWS (Sum (Sum))
-newtype State s a = State { runState :: s -> (a, s) }
+module Chapter7 where
 
-instance Functor (State s) where
-    fmap f m = State $ \s -> let (a, s') = runState m s
-                             in (f a, s')
-instance Applicative (State s) where
-    pure a = State $ \s -> (a, s)
-    mf <*> ma = do
-        f <- mf
-        f <$> ma
-instance Monad (State s) where
-    return = pure
-    m >>= k  = State $ \s -> let (a, s') = runState m s
-                             in runState (k a) s'
+import Data.Bifunctor (Bifunctor, bimap)
+class Applicative f => Alternative f where
+  empty :: f a
+  (<|>) :: f a -> f a -> f a
 
-nextValue :: State Int Int
-nextValue = State (\i -> (i, i + 1))
+class Monad m => MonadPlus m where
+  mzero :: m a
+  mplus :: m a -> m a -> m a
 
-get :: State s s
-get = State (\s -> (s, s))
+instance Monoid e => Alternative (Either e) where
+  empty = Left mempty
+  Left _ <|> r = r
+  l      <|> _ = l
 
-put :: s -> State s ()
-put s = State (\_ -> ((), s))
+instance Alternative Maybe where
+  empty = Nothing
+  Nothing <|> r = r
+  l       <|> _ = l
 
-modify :: (s -> s) -> State s ()
-modify f = State (\s -> ((), f s))
+instance Alternative [] where
+  empty = []
+  (<|>) = (++)
 
-nextValue' :: State Integer Integer
-nextValue' = do i <- get
-                put (i+1)
-                return i
+guard :: Alternative f => Bool -> f ()
+guard True  = pure ()
+guard False = empty
 
-nextValue'' :: State Integer Integer
-nextValue'' = do i <- get
-                 modify (+1)
-                 return i
+validateAge age = do 
+                  --age <- readMaybe age
+                  guard (age >= 18)
+                  return age
 
-modify' :: (s -> s) -> State s ()
-modify' f = do s' <- get
-               put (f s')
+asum :: (Traversable t, Alternative m) => t (m a) -> m a
+asum = foldr (<|>) empty
 
-evalState :: State s a -> s -> a
-evalState m s = fst (runState m s)
+msum :: (Traversable t, MonadPlus m) => t (m a) -> m a
+msum = foldr mplus mzero
 
-execState :: State s a -> s -> s 
-execState m s = snd (runState m s)
+mfilter :: MonadPlus m => (a -> Bool) -> m a -> m a
+mfilter p x = do x' <- x
+                 if p x' then return x' else mzero
 
-data Tree a = Leaf a | Node (Tree a) (Tree a)
+headZ :: MonadPlus m => [a] -> m a
+headZ [] = mzero
+headZ (x:_) = return x
 
+atZ :: (MonadPlus m, Alternative m) => [a] -> Int -> m a
+atZ xs i = do guard (i < length xs)
+              return (xs !! i)
 
-relabel :: Tree a -> State Int (Tree Int)
-relabel (Leaf _) = do
-                    i <- get
-                    modify(+1)
-                    return (Leaf i)
-relabel (Node l r) = relabel l >>= \l' ->
-                     relabel r >>= \r' ->
-                     return (Node l' r')
+type Person = String
 
-toList :: Tree a -> [a]
-toList (Leaf x) = [x]
-toList (Node l r) = toList l <> toList r
+people :: [Person]
+people = ["Alejandro", "Elena", "Quique", "John", "Mary", "Tom"]
 
-instance (Show a) => Show (Tree a) where
-  show = show.toList
-tree = Node (Node (Leaf 8) (Leaf 12)) (Leaf 30)
-rtree = fst $ runState (relabel tree) 0
+pcRels :: [(Person, Person)]
+pcRels = [("Alejandro", "Quique"), ("Elena", "Quique")
+         ,("John", "Mary"), ("John", "Tom"), ("Mary", "Tim")]
 
-newtype Reader r a = Reader { runReader :: r -> a }
+gpgcRels :: [(Person, Person)]
+gpgcRels = do (p1, c) <- pcRels
+              (c', g) <- pcRels
+              guard (c == c')
+              return (p1, g)
 
-instance Functor (Reader r) where
-    fmap f m = Reader $ \r -> f (runReader m r)
+siblingsRels = do (p1, c) <- pcRels
+                  (p2, c') <- pcRels
+                  guard (c == c' && p1 /= p2)
+                  return (p1, p2)
 
-instance Applicative (Reader r) where
-    pure a = Reader $ \_ -> a
-    mf <*> ma = Reader (\r -> let f = runReader mf r
-                                  a = runReader ma r
-                             in f a)
+sums :: [Integer] -> [(Integer, Integer, Integer)]
+sums xs = do x <- xs
+             y <- xs
+             z <- xs
+             guard (x + y == z)
+             return (x, y, z)
 
-instance Monad (Reader r) where
-    return = pure
-    m >>= k = Reader $ \r -> let a = runReader m r
-                             in runReader (k a) r
+pyts :: [Integer] -> [(Integer, Integer, Integer)]
+pyts xs = do x <- xs
+             y <- xs
+             z <- xs
+             guard (x^2 + y^2 == z^2)
+             return (x, y, z)
 
-ask :: Reader r r
-ask = Reader id
+triples ns = sums ns <|> pyts ns
 
-asks :: (r -> a) -> Reader r a
-asks f = f <$> ask
+class Monad m => MonadError e m where
+  throwError :: e -> m a
+  catchError :: m a -> (e -> m a) -> m a
 
-withReader :: (r -> s) -> Reader s a -> Reader r a
-withReader f m = Reader $ \r -> runReader m (f r)
+instance (MonadError e) (Either e) where
+  throwError = Left
+  catchError (Left e) f = f e
+  catchError r _ = r
 
-local :: (r -> r) -> Reader r a -> Reader r a
-local = withReader
+instance (MonadError e) Maybe where
+  throwError _ = Nothing
+  catchError Nothing f = Nothing
+  catchError r _ = r
 
-newtype Writer w a = Writer { runWriter :: (w, a) }
-
-instance Functor (Writer w) where
-    fmap f m = Writer $ let (w, a) = runWriter m
-                        in (w, f a)
-
-instance (Monoid w) => Applicative (Writer w) where
-    pure a = Writer (mempty, a)
-    mf <*> ma = Writer $ let (w, f) = runWriter mf
-                             (w', a) = runWriter ma
-                         in (w <> w', f a)
-
-instance (Monoid w) => Monad (Writer w) where
-    return = pure
-    m >>= k = Writer $ let (w, a) = runWriter m
-                           (w', a') = runWriter (k a)
-                       in (w <> w', a')
-
-tell :: w -> Writer w ()
-tell w = Writer (w, ())
-
-example :: Writer (Sum Int) String
-example = do tell (Sum 3)
-             tell (Sum 4)
-             return "seven"
-
-pass :: Writer w (b, w -> w) -> Writer w b
-pass  (Writer (w, (b, f))) = Writer (f w, b)
-
-censor :: Monoid w => (w -> w) -> Writer w a -> Writer w a
-censor f m = pass $ do a <- m
-                       return (a, f)
-
-mapWriter :: (v -> w) -> Writer v a -> Writer w a
-mapWriter f (Writer (v, a)) = Writer (f v, a)
-
-class Bifunctor f where
-    bimap :: (a -> b) -> (c -> d) -> f a c -> f b d
-    first :: (a -> b) -> f a c -> f b c
-    second :: (c -> d) -> f a c -> f a d
-
-instance Bifunctor Writer where
-    bimap f g (Writer (v, a)) = Writer (f v, g a)
-    first f (Writer (v, a)) = Writer (f v, a)
-    second f (Writer (v, a)) = Writer (v, f a)
-
-newtype Predicate a = Predicate { runPredicate :: a -> Bool }
-
-through :: (a -> b) -> Predicate b -> Predicate a
-through f (Predicate p) = Predicate (p . f)
-
-class Contravariant f where
-  contramap :: (a -> b) -> f b -> f a
-
-instance Contravariant Predicate where
-  contramap = through
-
-class Profunctor f where
-  lmap :: (v -> w) -> f w a -> f v a
-  rmap :: (a -> b) -> f v a -> f v b
-  -- Alternatively, map over both at
-  dimap :: (v -> w) -> (a -> b) -> f w a -> f v b
-
-instance Profunctor Reader where
-  lmap f m = Reader $ \r -> runReader m (f r)
-  rmap f m = Reader $ \r -> f (runReader m r)
-  dimap f g m = Reader $ \r -> g (runReader m (f r))
-
-newtype Returns r a = R (a -> r)
-
-instance Contravariant (Returns r) where
-  contramap f (R g) = R (g . f)
+-- instance Bifunctor Either where
+--   bimap f _ (Left x) = Left (f x)
+--   bimap _ g (Right y) = Right (g y)
